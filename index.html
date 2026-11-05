@@ -279,7 +279,11 @@ async function cloudGet(action){
  return result.data||[];
 }
 async function cloudPost(action,data){
- // POST for payloads (bill JSON); Apps Script doPost returns a result.
+ // Small vendor/shortcut records use JSONP GET to avoid cross-origin POST issues.
+ if(action==="savevendor"||action==="saveshortcut"){
+  return await cloudJsonp({action,data:JSON.stringify(data)});
+ }
+ // Bills remain POST because their JSON payload can be large.
  const response=await fetch(GOOGLE_SCRIPT_URL,{method:"POST",mode:"cors",redirect:"follow",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({action,data})});
  if(!response.ok)throw new Error("Cloud save failed ("+response.status+")");
  const result=await response.json();if(!result.success)throw new Error(result.message||"Cloud save failed");return result;
