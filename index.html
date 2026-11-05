@@ -353,22 +353,22 @@ async function editVendorRecord(oldName){
  if(vendors.some(v=>v.toLowerCase()===next.toLowerCase()))return alert("Vendor already exists.");
  if(!cloudReady)return alert("Google Sheets is not connected.");
  try{await cloudPost("savevendor",{id:next,name:next});await cloudDelete("deletevendor",oldName);vendors=vendors.filter(v=>v!==oldName);vendors.push(next);renderVendors();renderManageList();cloudStatus("Vendor updated in Google Sheets ✓",true);}
- catch(e){console.error(e);alert("Vendor update failed. Please check Google Sheets.");}
+ catch(e){console.error(e);alert("Vendor update failed: " + (e.message || "Please check Google Sheets."));}
 }
 async function deleteVendorRecord(name){
  if(!confirm(`Delete vendor "${name}"?`))return;if(!cloudReady)return alert("Google Sheets is not connected.");
  try{await cloudDelete("deletevendor",name);vendors=vendors.filter(v=>v!==name);renderVendors();renderManageList();cloudStatus("Vendor deleted from Google Sheets ✓",true);}
- catch(e){console.error(e);alert("Vendor delete failed. Please retry.");}
+ catch(e){console.error(e);alert("Vendor delete failed: " + (e.message || "Please retry."));}
 }
 async function editShortcutRecord(key,oldValue){
  const value=prompt("Edit shortcut item name:",oldValue);if(value===null)return;const next=value.trim();if(!next)return alert("Item name cannot be empty.");if(!cloudReady)return alert("Google Sheets is not connected.");
  try{await cloudPost("saveshortcut",{id:key,key,value:next});shortcuts[key]=next;renderShortcuts();renderManageList();updateAllItemLabels();cloudStatus("Shortcut updated in Google Sheets ✓",true);}
- catch(e){console.error(e);alert("Shortcut update failed. Please retry.");}
+ catch(e){console.error(e);alert("Shortcut update failed: " + (e.message || "Please retry."));}
 }
 async function deleteShortcutRecord(key){
  if(!confirm(`Delete shortcut "${key}"?`))return;if(!cloudReady)return alert("Google Sheets is not connected.");
  try{await cloudDelete("deleteshortcut",key);delete shortcuts[key];renderShortcuts();renderManageList();updateAllItemLabels();cloudStatus("Shortcut deleted from Google Sheets ✓",true);}
- catch(e){console.error(e);alert("Shortcut delete failed. Please retry.");}
+ catch(e){console.error(e);alert("Shortcut delete failed: " + (e.message || "Please retry."));}
 }
 
 async function saveVendor(){
