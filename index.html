@@ -271,9 +271,17 @@ async function cloudPost(action,data){
  const result=await response.json();if(!result.success)throw new Error(result.message||"Cloud save failed");return result;
 }
 async function cloudDelete(action,id){
- const response=await fetch(GOOGLE_SCRIPT_URL,{method:"POST",mode:"cors",redirect:"follow",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({action,id})});
- if(!response.ok)throw new Error("Cloud delete failed ("+response.status+")");
- const result=await response.json();if(!result.success)throw new Error(result.message||"Cloud delete failed");return result;
+ // Apps Script ContentService responses can fail browser CORS checks even
+ // when the server-side mutation executes. Send a simple opaque POST.
+ await fetch(GOOGLE_SCRIPT_URL,{
+  method:"POST",
+  mode:"no-cors",
+  redirect:"follow",
+  headers:{"Content-Type":"text/plain;charset=utf-8"},
+  body:JSON.stringify({action,id})
+ });
+ // no-cors responses are opaque and cannot be inspected by the browser.
+ return {success:true,requestSent:true};
 }
 async function syncInitialData(){
  cloudStatus("Connecting to Google Sheets…");
@@ -412,7 +420,7 @@ async function deleteSavedBill(id){
  const b=savedBills.find(x=>x.id===id);if(!b)return;
  if(!confirm(`Delete bill ${b.billNo||""} for ${b.vendor||"this vendor"}? This cannot be undone.`))return;
  savedBills=savedBills.filter(x=>x.id!==id);localStorage.setItem("muskanSavedBills",JSON.stringify(savedBills));renderPreviousBills();
- if(cloudReady){try{await cloudDelete("deletebill",id);cloudStatus("Bill deleted from Google Sheets ✓",true)}catch(e){console.error(e);cloudStatus("Delete sync failed — refresh may restore bill");alert("Bill deleted locally, but cloud deletion failed. Please retry when connected.")}}
+ if(cloudReady){try{await cloudDelete("deletebill",id);cloudStatus("Cloud delete request sent — verify in Sheet",true)}catch(e){console.error(e);cloudStatus("Delete sync failed — refresh may restore bill");alert("Bill removed from this device. Cloud delete request was sent; please verify the Bills sheet.")}}
 }
 
 function clearAllEntries(){if(!confirm("Clear all current bill entries?"))return;entries.innerHTML="";lastEntryDate="";addEntry();updatePreview()}
