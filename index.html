@@ -251,6 +251,49 @@ Nature and Quality which it I Purports Purport to be</div>
 <div class="modal-backdrop no-print" id="shortcutModal"><div class="modal"><h2>Create Shortcut</h2><div class="field"><label>Shortcut Number / Code</label><input id="shortcutKeyInput" placeholder="e.g. 1"></div><div class="field" style="margin-top:10px"><label>Item Name</label><input id="shortcutValueInput" placeholder="e.g. Boiler"></div><div class="modal-actions"><button class="light" onclick="closeModal('shortcutModal')">Cancel</button><button class="dark" onclick="saveShortcutFromModal()">Save Shortcut</button></div></div></div>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
+const GOOGLE_SCRIPT_URL="https://script.google.com/macros/s/AKfycbxNle2UdICNGUnVZ1dpAAJ7QYSM9ZYSDbdJ6Q_7bUip4ETyfwUIRgmJrYXMRv3fUfxQ/exec";
+let cloudReady=false;
+let cloudBusy=false;
+function cloudStatus(message,ok=false){
+ let el=document.getElementById("cloudStatus");
+ if(!el){el=document.createElement("div");el.id="cloudStatus";el.style.cssText="position:fixed;right:12px;bottom:12px;z-index:9999;padding:8px 12px;border-radius:8px;font:600 12px Arial;box-shadow:0 2px 10px #0002;background:#fff;border:1px solid #ddd;color:#333;max-width:80vw";document.body.appendChild(el)}
+ el.textContent=message;el.style.color=ok?"#18794e":"#8a4b08";
+}
+async function cloudGet(action){
+ const url=GOOGLE_SCRIPT_URL+"?action="+encodeURIComponent(action)+"&t="+Date.now();
+ const response=await fetch(url,{method:"GET",redirect:"follow",cache:"no-store"});
+ if(!response.ok)throw new Error("Cloud read failed ("+response.status+")");
+ const data=await response.json();if(!data.success)throw new Error(data.message||"Cloud read failed");return data.data||[];
+}
+async function cloudPost(action,data){
+ const response=await fetch(GOOGLE_SCRIPT_URL,{method:"POST",mode:"cors",redirect:"follow",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({action,data})});
+ if(!response.ok)throw new Error("Cloud save failed ("+response.status+")");
+ const result=await response.json();if(!result.success)throw new Error(result.message||"Cloud save failed");return result;
+}
+async function cloudDelete(action,id){
+ const response=await fetch(GOOGLE_SCRIPT_URL,{method:"POST",mode:"cors",redirect:"follow",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({action,id})});
+ if(!response.ok)throw new Error("Cloud delete failed ("+response.status+")");
+ const result=await response.json();if(!result.success)throw new Error(result.message||"Cloud delete failed");return result;
+}
+async function syncInitialData(){
+ cloudStatus("Connecting to Google Sheets…");
+ try{
+  const [remoteBills,remoteVendors,remoteShortcuts]=await Promise.all([cloudGet("getbills"),cloudGet("getvendors"),cloudGet("getshortcuts")]);
+  const localBills=JSON.parse(localStorage.getItem("muskanSavedBills")||"[]");
+  const localVendors=JSON.parse(localStorage.getItem("muskanVendors")||"[]");
+  const localShortcuts=JSON.parse(localStorage.getItem("muskanShortcuts")||"null")||defaultShortcuts;
+  // First-time migration: upload existing browser data only when the cloud collection is empty.
+  if(!remoteBills.length&&localBills.length){for(const b of localBills)await cloudPost("savebill",b)}
+  if(!remoteVendors.length&&localVendors.length){for(const v of localVendors)await cloudPost("savevendor",{id:v,name:v})}
+  if(!remoteShortcuts.length&&Object.keys(localShortcuts).length){for(const [key,value] of Object.entries(localShortcuts))await cloudPost("saveshortcut",{id:key,key,value})}
+  const billsNow=remoteBills.length?remoteBills:localBills;
+  const vendorsNow=remoteVendors.length?remoteVendors.map(v=>typeof v==="string"?v:(v.name||v.id)).filter(Boolean):localVendors;
+  const shortcutsNow=remoteShortcuts.length?Object.fromEntries(remoteShortcuts.map(x=>[String(x.key||x.id),String(x.value||"")]).filter(x=>x[0]&&x[1])):localShortcuts;
+  savedBills=billsNow;vendors=vendorsNow;shortcuts=shortcutsNow;
+  localStorage.setItem("muskanSavedBills",JSON.stringify(savedBills));localStorage.setItem("muskanVendors",JSON.stringify(vendors));localStorage.setItem("muskanShortcuts",JSON.stringify(shortcuts));
+  cloudReady=true;renderVendors();renderShortcuts();renderPreviousBills();updateAllItemLabels();cloudStatus("Google Sheets connected ✓",true);
+ }catch(err){console.error("Google Sheets sync:",err);cloudStatus("Cloud connection failed — local mode active");}
+}
 const defaultShortcuts={1:"Boiler",2:"Breast Boneless",3:"L Boneless"};
 let shortcuts=JSON.parse(localStorage.getItem("muskanShortcuts")||"null")||defaultShortcuts;
 const entries=document.getElementById("entries");
@@ -274,12 +317,12 @@ function showSection(name){
 function openVendorModal(){document.getElementById("vendorModal").style.display="flex";document.getElementById("vendorNameInput").focus()}
 function openShortcutModal(){document.getElementById("shortcutModal").style.display="flex";document.getElementById("shortcutKeyInput").focus()}
 function closeModal(id){document.getElementById(id).style.display="none"}
-function saveVendor(){const name=document.getElementById("vendorNameInput").value.trim();if(!name)return alert("Please enter vendor name.");if(!vendors.some(v=>v.toLowerCase()===name.toLowerCase()))vendors.push(name);localStorage.setItem("muskanVendors",JSON.stringify(vendors));renderVendors();document.getElementById("vendorSelect").value=name;selectVendor(name);document.getElementById("vendorNameInput").value="";closeModal("vendorModal")}
+async function saveVendor(){const name=document.getElementById("vendorNameInput").value.trim();if(!name)return alert("Please enter vendor name.");if(!vendors.some(v=>v.toLowerCase()===name.toLowerCase()))vendors.push(name);localStorage.setItem("muskanVendors",JSON.stringify(vendors));renderVendors();document.getElementById("vendorSelect").value=name;selectVendor(name);document.getElementById("vendorNameInput").value="";closeModal("vendorModal");if(cloudReady){try{await cloudPost("savevendor",{id:name,name});cloudStatus("Vendor saved to Google Sheets ✓",true)}catch(e){cloudStatus("Vendor saved locally; cloud sync failed");console.error(e)}}}
 function renderVendors(){const sel=document.getElementById("vendorSelect");const current=sel.value;sel.innerHTML='<option value="">Select vendor</option>'+vendors.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");if(vendors.includes(current))sel.value=current}
 function selectVendor(name){document.getElementById("ms").value=name||"";updatePreview()}
 function escapeHtml(v){return String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function newBill(){editingBillId=null;if(getData().length&&!confirm("Start a new bill? Current entries will be cleared."))return;entries.innerHTML="";document.getElementById("mainBill").value="";document.getElementById("ms").value="";document.getElementById("vendorSelect").value="";lastEntryDate="";addEntry();updatePreview();showSection("bill")}
-function saveShortcutFromModal(){const k=document.getElementById("shortcutKeyInput").value.trim(),v=document.getElementById("shortcutValueInput").value.trim();if(!k||!v)return alert("Enter shortcut code and item name.");shortcuts[k]=v;localStorage.setItem("muskanShortcuts",JSON.stringify(shortcuts));renderShortcuts();updateAllItemLabels();document.getElementById("shortcutKeyInput").value="";document.getElementById("shortcutValueInput").value="";closeModal("shortcutModal")}
+async function saveShortcutFromModal(){const k=document.getElementById("shortcutKeyInput").value.trim(),v=document.getElementById("shortcutValueInput").value.trim();if(!k||!v)return alert("Enter shortcut code and item name.");shortcuts[k]=v;localStorage.setItem("muskanShortcuts",JSON.stringify(shortcuts));renderShortcuts();updateAllItemLabels();document.getElementById("shortcutKeyInput").value="";document.getElementById("shortcutValueInput").value="";closeModal("shortcutModal");if(cloudReady){try{await cloudPost("saveshortcut",{id:k,key:k,value:v});cloudStatus("Shortcut saved to Google Sheets ✓",true)}catch(e){cloudStatus("Shortcut saved locally; cloud sync failed");console.error(e)}}}
 function renderMarquee(){const el=document.getElementById("shortcutMarquee");const pairs=Object.entries(shortcuts);el.innerHTML="";if(!pairs.length){el.innerHTML='<span style="padding:8px 20px;color:#8a6a52">No shortcuts saved yet — create one from the sidebar.</span>';return;}pairs.concat(pairs).forEach(([k,v])=>{const b=document.createElement("button");b.className="shortcut-chip";b.innerHTML=`<b>${escapeHtml(k)}</b> ${escapeHtml(v)}`;b.onclick=()=>insertShortcut(k);el.appendChild(b)})}
 function insertShortcut(k){const active=document.activeElement;let target=active&&active.classList&&active.classList.contains("eitem")?active:document.querySelector(".entry:last-child .eitem");if(!target){addEntry();target=document.querySelector(".entry:last-child .eitem")}target.value=shortcuts[k]||k;target.dispatchEvent(new Event("input",{bubbles:true}));target.focus()}
 function addShortcutRow(k="",v=""){
@@ -288,10 +331,11 @@ function addShortcutRow(k="",v=""){
  document.getElementById("shortcuts").appendChild(d);
 }
 function renderShortcuts(){renderMarquee();}
-function saveShortcuts(){
+async function saveShortcuts(){
  const map={};
  document.querySelectorAll(".shortcut").forEach(r=>{const k=r.querySelector(".sk").value.trim(),v=r.querySelector(".sv").value.trim();if(k&&v)map[k]=v});
- shortcuts=map;localStorage.setItem("muskanShortcuts",JSON.stringify(map));updateAllItemLabels();renderMarquee();alert("Shortcuts saved.");
+ const oldKeys=Object.keys(shortcuts);shortcuts=map;localStorage.setItem("muskanShortcuts",JSON.stringify(map));updateAllItemLabels();renderMarquee();
+ if(cloudReady){try{for(const key of oldKeys)if(!map[key])await cloudDelete("deleteshortcut",key);for(const [key,value] of Object.entries(map))await cloudPost("saveshortcut",{id:key,key,value});cloudStatus("Shortcuts synced to Google Sheets ✓",true)}catch(e){cloudStatus("Shortcuts saved locally; cloud sync failed");console.error(e)}}alert("Shortcuts saved.");
 }
 function addEntry(data={}){
  const d=document.createElement("div");d.className="entry";
@@ -343,10 +387,14 @@ function currentBillObject(){
  const grand=data.reduce((sum,x)=>sum+x.kg*x.rate,0);
  return {id:editingBillId||("bill_"+Date.now()),billNo:document.getElementById("mainBill").value.trim(),vendor:document.getElementById("ms").value.trim(),items:data,grandTotal:grand,updatedAt:new Date().toISOString()};
 }
-function saveCurrentBill(){
- const bill=currentBillObject();if(!bill)return alert("Please add at least one bill item.");
+async function saveCurrentBill(){
+ if(cloudBusy)return;const bill=currentBillObject();if(!bill)return alert("Please add at least one bill item.");
+ cloudBusy=true;cloudStatus("Saving bill…");
  const idx=savedBills.findIndex(x=>x.id===bill.id);if(idx>=0)savedBills[idx]=bill;else savedBills.unshift(bill);
- localStorage.setItem("muskanSavedBills",JSON.stringify(savedBills));editingBillId=bill.id;alert("Bill saved successfully.");
+ localStorage.setItem("muskanSavedBills",JSON.stringify(savedBills));editingBillId=bill.id;renderPreviousBills();
+ try{if(cloudReady){await cloudPost("savebill",bill);cloudStatus("Bill saved to Google Sheets ✓",true);alert("Bill saved successfully.")}else{cloudStatus("Bill saved locally; cloud unavailable");alert("Bill saved on this device. Google Sheets connection is unavailable.")}}
+ catch(e){console.error(e);cloudStatus("Bill saved locally; cloud sync failed");alert("Bill saved on this device, but Google Sheets sync failed. Please check connection and retry.")}
+ finally{cloudBusy=false;}
 }
 function renderPreviousBills(){
  const list=document.getElementById("previousBillsList");document.getElementById("savedBillCount").textContent=savedBills.length+" Bills";
@@ -360,10 +408,11 @@ function loadBillData(b){
 }
 function editSavedBill(id){const b=savedBills.find(x=>x.id===id);if(!b)return;loadBillData(b);showSection("bill");}
 function printSavedBill(id){const b=savedBills.find(x=>x.id===id);if(!b)return;loadBillData(b);showSection("bill");updatePreview();window.print();}
-function deleteSavedBill(id){
+async function deleteSavedBill(id){
  const b=savedBills.find(x=>x.id===id);if(!b)return;
  if(!confirm(`Delete bill ${b.billNo||""} for ${b.vendor||"this vendor"}? This cannot be undone.`))return;
  savedBills=savedBills.filter(x=>x.id!==id);localStorage.setItem("muskanSavedBills",JSON.stringify(savedBills));renderPreviousBills();
+ if(cloudReady){try{await cloudDelete("deletebill",id);cloudStatus("Bill deleted from Google Sheets ✓",true)}catch(e){console.error(e);cloudStatus("Delete sync failed — refresh may restore bill");alert("Bill deleted locally, but cloud deletion failed. Please retry when connected.")}}
 }
 
 function clearAllEntries(){if(!confirm("Clear all current bill entries?"))return;entries.innerHTML="";lastEntryDate="";addEntry();updatePreview()}
@@ -509,6 +558,7 @@ renderShortcuts();
 renderVendors();
 addEntry();updatePreview();
 renderPreviousBills();
+syncInitialData();
 </script>
 </body>
 </html>
