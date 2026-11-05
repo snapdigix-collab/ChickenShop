@@ -339,15 +339,32 @@ function openManageModal(type){
 }
 function renderManageList(){
  const el=document.getElementById("manageList");
+ el.innerHTML="";
+ const addEmpty=(msg)=>{const d=document.createElement("div");d.style.cssText="color:#778193;padding:10px";d.textContent=msg;el.appendChild(d);};
+ const addAction=(row,label,cls,handler)=>{const b=document.createElement("button");b.className=cls;b.textContent=label;b.type="button";b.addEventListener("click",handler);row.appendChild(b);};
  if(manageType==="vendors"){
-  if(!vendors.length){el.innerHTML='<div style="color:#778193;padding:10px">No vendors saved.</div>';return;}
-  el.innerHTML=vendors.map(v=>`<div class="vendor-row"><div class="vendor-name" style="padding:9px;border-radius:7px">${escapeHtml(v)}</div><button class="light" onclick="editVendorRecord(${JSON.stringify(v).replace(/</g,'\\u003c')})">Edit</button><button class="red" onclick="deleteVendorRecord(${JSON.stringify(v).replace(/</g,'\\u003c')})">Delete</button></div>`).join("");
+  if(!vendors.length){addEmpty("No vendors saved.");return;}
+  vendors.forEach(v=>{
+   const row=document.createElement("div");row.className="vendor-row";
+   const name=document.createElement("div");name.className="vendor-name";name.style.cssText="padding:9px;border-radius:7px";name.textContent=v;row.appendChild(name);
+   addAction(row,"Edit","light",()=>editVendorRecord(v));
+   addAction(row,"Delete","red",()=>deleteVendorRecord(v));
+   el.appendChild(row);
+  });
  }else{
   const pairs=Object.entries(shortcuts);
-  if(!pairs.length){el.innerHTML='<div style="color:#778193;padding:10px">No shortcuts saved.</div>';return;}
-  el.innerHTML=pairs.map(([k,v])=>`<div class="vendor-row"><div class="vendor-name" style="padding:9px;border-radius:7px"><b>${escapeHtml(k)}</b> — ${escapeHtml(v)}</div><button class="light" onclick="editShortcutRecord(${JSON.stringify(k)},${JSON.stringify(v)})">Edit</button><button class="red" onclick="deleteShortcutRecord(${JSON.stringify(k)})">Delete</button></div>`).join("");
+  if(!pairs.length){addEmpty("No shortcuts saved.");return;}
+  pairs.forEach(([k,v])=>{
+   const row=document.createElement("div");row.className="vendor-row";
+   const name=document.createElement("div");name.className="vendor-name";name.style.cssText="padding:9px;border-radius:7px";
+   const strong=document.createElement("b");strong.textContent=k;name.appendChild(strong);name.appendChild(document.createTextNode(" — "+v));row.appendChild(name);
+   addAction(row,"Edit","light",()=>editShortcutRecord(k,v));
+   addAction(row,"Delete","red",()=>deleteShortcutRecord(k));
+   el.appendChild(row);
+  });
  }
 }
+
 async function editVendorRecord(oldName){
  const name=prompt("Edit vendor name:",oldName);if(name===null)return;const next=name.trim();if(!next)return alert("Vendor name cannot be empty.");if(next===oldName)return;
  if(vendors.some(v=>v.toLowerCase()===next.toLowerCase()))return alert("Vendor already exists.");
