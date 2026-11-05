@@ -186,9 +186,11 @@ button{transition:transform .12s,box-shadow .12s;padding:10px 14px;border:0;bord
     <button class="nav-btn active" onclick="showSection('bill')"><span class="ico">▤</span> Create New Bill</button>
     <button class="nav-btn" onclick="showSection('previous')"><span class="ico">◷</span> View Previous Bills</button>
     <button class="nav-btn" onclick="openVendorModal()"><span class="ico">♙</span> Create Vendor</button>
+    <button class="nav-btn" onclick="openManageModal('vendors')"><span class="ico">✎</span> Manage Vendors</button>
     <button class="nav-btn" onclick="openShortcutModal()"><span class="ico">⌘</span> Create Shortcut</button>
+    <button class="nav-btn" onclick="openManageModal('shortcuts')"><span class="ico">✎</span> Manage Shortcuts</button>
   </nav>
-  <div class="sidebar-note">Print layout remains unchanged. Vendor and shortcut lists are currently saved in this browser until backend setup.</div>
+  <div class="sidebar-note">Print layout remains unchanged. Bills, vendors and shortcuts are managed in Google Sheets.</div>
 </aside>
 <main class="workspace">
   <div class="topbar no-print"><div><h1>Bill Entry</h1><p>Create bills quickly with item shortcuts.</p></div><button class="light" onclick="newBill()">＋ New Bill</button></div>
@@ -249,6 +251,7 @@ Nature and Quality which it I Purports Purport to be</div>
 
 <div class="modal-backdrop no-print" id="vendorModal"><div class="modal"><h2>Create Vendor</h2><div class="field"><label>Vendor / M/S Name</label><input id="vendorNameInput" placeholder="Enter vendor name"></div><div class="modal-actions"><button class="light" onclick="closeModal('vendorModal')">Cancel</button><button class="dark" onclick="saveVendor()">Save Vendor</button></div></div></div>
 <div class="modal-backdrop no-print" id="shortcutModal"><div class="modal"><h2>Create Shortcut</h2><div class="field"><label>Shortcut Number / Code</label><input id="shortcutKeyInput" placeholder="e.g. 1"></div><div class="field" style="margin-top:10px"><label>Item Name</label><input id="shortcutValueInput" placeholder="e.g. Boiler"></div><div class="modal-actions"><button class="light" onclick="closeModal('shortcutModal')">Cancel</button><button class="dark" onclick="saveShortcutFromModal()">Save Shortcut</button></div></div></div>
+<div class="modal-backdrop no-print" id="manageModal"><div class="modal"><h2 id="manageTitle">Manage</h2><div id="manageList" class="vendor-list"></div><div class="modal-actions"><button class="light" onclick="closeModal('manageModal')">Close</button></div></div></div>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 const GOOGLE_SCRIPT_URL="https://script.google.com/macros/s/AKfycbx6SLSO0no6qgExlJjaiNPJBi2rwkgX1bkzDSI0om9elVXarSLrfQDlUFitpFCKnX-Y/exec";
@@ -259,56 +262,58 @@ function cloudStatus(message,ok=false){
  if(!el){el=document.createElement("div");el.id="cloudStatus";el.style.cssText="position:fixed;right:12px;bottom:12px;z-index:9999;padding:8px 12px;border-radius:8px;font:600 12px Arial;box-shadow:0 2px 10px #0002;background:#fff;border:1px solid #ddd;color:#333;max-width:80vw";document.body.appendChild(el)}
  el.textContent=message;el.style.color=ok?"#18794e":"#8a4b08";
 }
+function cloudJsonp(params){
+ return new Promise((resolve,reject)=>{
+  const cb="snapCb_"+Date.now()+"_"+Math.floor(Math.random()*1000000);
+  const script=document.createElement("script");
+  const timer=setTimeout(()=>{cleanup();reject(new Error("Google Sheets request timed out"))},20000);
+  function cleanup(){clearTimeout(timer);delete window[cb];script.remove()}
+  window[cb]=(result)=>{cleanup();if(!result||!result.success)reject(new Error(result?.message||"Cloud request failed"));else resolve(result)};
+  script.onerror=()=>{cleanup();reject(new Error("Could not reach Google Sheets"))};
+  script.src=GOOGLE_SCRIPT_URL+"?"+new URLSearchParams({...params,callback:cb,t:String(Date.now())}).toString();
+  document.head.appendChild(script);
+ });
+}
 async function cloudGet(action){
- const url=GOOGLE_SCRIPT_URL+"?action="+encodeURIComponent(action)+"&t="+Date.now();
- const response=await fetch(url,{method:"GET",redirect:"follow",cache:"no-store"});
- if(!response.ok)throw new Error("Cloud read failed ("+response.status+")");
- const data=await response.json();if(!data.success)throw new Error(data.message||"Cloud read failed");return data.data||[];
+ const result=await cloudJsonp({action});
+ return result.data||[];
 }
 async function cloudPost(action,data){
+ // POST for payloads (bill JSON); Apps Script doPost returns a result.
  const response=await fetch(GOOGLE_SCRIPT_URL,{method:"POST",mode:"cors",redirect:"follow",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({action,data})});
  if(!response.ok)throw new Error("Cloud save failed ("+response.status+")");
  const result=await response.json();if(!result.success)throw new Error(result.message||"Cloud save failed");return result;
 }
 async function cloudDelete(action,id){
- // Apps Script ContentService responses can fail browser CORS checks even
- // when the server-side mutation executes. Send a simple opaque POST.
- await fetch(GOOGLE_SCRIPT_URL,{
-  method:"POST",
-  mode:"no-cors",
-  redirect:"follow",
-  headers:{"Content-Type":"text/plain;charset=utf-8"},
-  body:JSON.stringify({action,id})
- });
- // no-cors responses are opaque and cannot be inspected by the browser.
- return {success:true,requestSent:true};
+ // Mutations use GET+JSONP so we can confirm the Apps Script result cross-origin.
+ return await cloudJsonp({action,id:String(id)});
 }
 async function syncInitialData(){
+ cloudReady=false;
  cloudStatus("Connecting to Google Sheets…");
  try{
   const [remoteBills,remoteVendors,remoteShortcuts]=await Promise.all([cloudGet("getbills"),cloudGet("getvendors"),cloudGet("getshortcuts")]);
-  const localBills=JSON.parse(localStorage.getItem("muskanSavedBills")||"[]");
-  const localVendors=JSON.parse(localStorage.getItem("muskanVendors")||"[]");
-  const localShortcuts=JSON.parse(localStorage.getItem("muskanShortcuts")||"null")||defaultShortcuts;
-  // First-time migration: upload existing browser data only when the cloud collection is empty.
-  if(!remoteBills.length&&localBills.length){for(const b of localBills)await cloudPost("savebill",b)}
-  if(!remoteVendors.length&&localVendors.length){for(const v of localVendors)await cloudPost("savevendor",{id:v,name:v})}
-  if(!remoteShortcuts.length&&Object.keys(localShortcuts).length){for(const [key,value] of Object.entries(localShortcuts))await cloudPost("saveshortcut",{id:key,key,value})}
-  const billsNow=remoteBills.length?remoteBills:localBills;
-  const vendorsNow=remoteVendors.length?remoteVendors.map(v=>typeof v==="string"?v:(v.name||v.id)).filter(Boolean):localVendors;
-  const shortcutsNow=remoteShortcuts.length?Object.fromEntries(remoteShortcuts.map(x=>[String(x.key||x.id),String(x.value||"")]).filter(x=>x[0]&&x[1])):localShortcuts;
-  savedBills=billsNow;vendors=vendorsNow;shortcuts=shortcutsNow;
-  localStorage.setItem("muskanSavedBills",JSON.stringify(savedBills));localStorage.setItem("muskanVendors",JSON.stringify(vendors));localStorage.setItem("muskanShortcuts",JSON.stringify(shortcuts));
-  cloudReady=true;renderVendors();renderShortcuts();renderPreviousBills();updateAllItemLabels();cloudStatus("Google Sheets connected ✓",true);
- }catch(err){console.error("Google Sheets sync:",err);cloudStatus("Cloud connection failed — local mode active");}
+  savedBills=remoteBills;
+  vendors=remoteVendors.map(v=>typeof v==="string"?v:(v.name||v.id)).filter(Boolean);
+  shortcuts=remoteShortcuts.length?Object.fromEntries(remoteShortcuts.map(x=>[String(x.key||x.id),String(x.value||"")]).filter(x=>x[0]&&x[1])):{};
+  cloudReady=true;
+  renderVendors();renderShortcuts();renderPreviousBills();updateAllItemLabels();
+  cloudStatus("Google Sheets connected ✓",true);
+ }catch(err){
+  cloudReady=false;
+  savedBills=[];vendors=[];shortcuts={};
+  renderVendors();renderShortcuts();renderPreviousBills();updateAllItemLabels();
+  console.error("Google Sheets connection:",err);
+  cloudStatus("Cloud unavailable — records are not loaded");
+ }
 }
 const defaultShortcuts={1:"Boiler",2:"Breast Boneless",3:"L Boneless"};
-let shortcuts=JSON.parse(localStorage.getItem("muskanShortcuts")||"null")||defaultShortcuts;
+let shortcuts={};
 const entries=document.getElementById("entries");
-let vendors=JSON.parse(localStorage.getItem("muskanVendors")||"[]");
+let vendors=[];
 let lastEntryDate="";
 let editingBillId=null;
-let savedBills=JSON.parse(localStorage.getItem("muskanSavedBills")||"[]");
+let savedBills=[];
 
 function toggleMobileSidebar(){
  const nav=document.querySelector(".sidebar-nav"),btn=document.querySelector(".mobile-nav-toggle");
@@ -325,12 +330,71 @@ function showSection(name){
 function openVendorModal(){document.getElementById("vendorModal").style.display="flex";document.getElementById("vendorNameInput").focus()}
 function openShortcutModal(){document.getElementById("shortcutModal").style.display="flex";document.getElementById("shortcutKeyInput").focus()}
 function closeModal(id){document.getElementById(id).style.display="none"}
-async function saveVendor(){const name=document.getElementById("vendorNameInput").value.trim();if(!name)return alert("Please enter vendor name.");if(!vendors.some(v=>v.toLowerCase()===name.toLowerCase()))vendors.push(name);localStorage.setItem("muskanVendors",JSON.stringify(vendors));renderVendors();document.getElementById("vendorSelect").value=name;selectVendor(name);document.getElementById("vendorNameInput").value="";closeModal("vendorModal");if(cloudReady){try{await cloudPost("savevendor",{id:name,name});cloudStatus("Vendor saved to Google Sheets ✓",true)}catch(e){cloudStatus("Vendor saved locally; cloud sync failed");console.error(e)}}}
+let manageType="";
+function openManageModal(type){
+ manageType=type;
+ document.getElementById("manageTitle").textContent=type==="vendors"?"Manage Vendors":"Manage Shortcuts";
+ renderManageList();
+ document.getElementById("manageModal").style.display="flex";
+}
+function renderManageList(){
+ const el=document.getElementById("manageList");
+ if(manageType==="vendors"){
+  if(!vendors.length){el.innerHTML='<div style="color:#778193;padding:10px">No vendors saved.</div>';return;}
+  el.innerHTML=vendors.map(v=>`<div class="vendor-row"><div class="vendor-name" style="padding:9px;border-radius:7px">${escapeHtml(v)}</div><button class="light" onclick="editVendorRecord(${JSON.stringify(v).replace(/</g,'\\u003c')})">Edit</button><button class="red" onclick="deleteVendorRecord(${JSON.stringify(v).replace(/</g,'\\u003c')})">Delete</button></div>`).join("");
+ }else{
+  const pairs=Object.entries(shortcuts);
+  if(!pairs.length){el.innerHTML='<div style="color:#778193;padding:10px">No shortcuts saved.</div>';return;}
+  el.innerHTML=pairs.map(([k,v])=>`<div class="vendor-row"><div class="vendor-name" style="padding:9px;border-radius:7px"><b>${escapeHtml(k)}</b> — ${escapeHtml(v)}</div><button class="light" onclick="editShortcutRecord(${JSON.stringify(k)},${JSON.stringify(v)})">Edit</button><button class="red" onclick="deleteShortcutRecord(${JSON.stringify(k)})">Delete</button></div>`).join("");
+ }
+}
+async function editVendorRecord(oldName){
+ const name=prompt("Edit vendor name:",oldName);if(name===null)return;const next=name.trim();if(!next)return alert("Vendor name cannot be empty.");if(next===oldName)return;
+ if(vendors.some(v=>v.toLowerCase()===next.toLowerCase()))return alert("Vendor already exists.");
+ if(!cloudReady)return alert("Google Sheets is not connected.");
+ try{await cloudPost("savevendor",{id:next,name:next});await cloudDelete("deletevendor",oldName);vendors=vendors.filter(v=>v!==oldName);vendors.push(next);renderVendors();renderManageList();cloudStatus("Vendor updated in Google Sheets ✓",true);}
+ catch(e){console.error(e);alert("Vendor update failed. Please check Google Sheets.");}
+}
+async function deleteVendorRecord(name){
+ if(!confirm(`Delete vendor "${name}"?`))return;if(!cloudReady)return alert("Google Sheets is not connected.");
+ try{await cloudDelete("deletevendor",name);vendors=vendors.filter(v=>v!==name);renderVendors();renderManageList();cloudStatus("Vendor deleted from Google Sheets ✓",true);}
+ catch(e){console.error(e);alert("Vendor delete failed. Please retry.");}
+}
+async function editShortcutRecord(key,oldValue){
+ const value=prompt("Edit shortcut item name:",oldValue);if(value===null)return;const next=value.trim();if(!next)return alert("Item name cannot be empty.");if(!cloudReady)return alert("Google Sheets is not connected.");
+ try{await cloudPost("saveshortcut",{id:key,key,value:next});shortcuts[key]=next;renderShortcuts();renderManageList();updateAllItemLabels();cloudStatus("Shortcut updated in Google Sheets ✓",true);}
+ catch(e){console.error(e);alert("Shortcut update failed. Please retry.");}
+}
+async function deleteShortcutRecord(key){
+ if(!confirm(`Delete shortcut "${key}"?`))return;if(!cloudReady)return alert("Google Sheets is not connected.");
+ try{await cloudDelete("deleteshortcut",key);delete shortcuts[key];renderShortcuts();renderManageList();updateAllItemLabels();cloudStatus("Shortcut deleted from Google Sheets ✓",true);}
+ catch(e){console.error(e);alert("Shortcut delete failed. Please retry.");}
+}
+
+async function saveVendor(){
+ const name=document.getElementById("vendorNameInput").value.trim();
+ if(!name)return alert("Please enter vendor name.");
+ if(!cloudReady)return alert("Google Sheets is not connected. Vendor was not saved.");
+ if(vendors.some(v=>v.toLowerCase()===name.toLowerCase()))return alert("Vendor already exists.");
+ try{
+  await cloudPost("savevendor",{id:name,name});
+  vendors.push(name);renderVendors();document.getElementById("vendorSelect").value=name;selectVendor(name);
+  document.getElementById("vendorNameInput").value="";closeModal("vendorModal");cloudStatus("Vendor saved to Google Sheets ✓",true);
+ }catch(e){console.error(e);cloudStatus("Vendor save failed");alert("Vendor could not be saved to Google Sheets. Please retry.");}
+}
 function renderVendors(){const sel=document.getElementById("vendorSelect");const current=sel.value;sel.innerHTML='<option value="">Select vendor</option>'+vendors.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");if(vendors.includes(current))sel.value=current}
 function selectVendor(name){document.getElementById("ms").value=name||"";updatePreview()}
 function escapeHtml(v){return String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function newBill(){editingBillId=null;if(getData().length&&!confirm("Start a new bill? Current entries will be cleared."))return;entries.innerHTML="";document.getElementById("mainBill").value="";document.getElementById("ms").value="";document.getElementById("vendorSelect").value="";lastEntryDate="";addEntry();updatePreview();showSection("bill")}
-async function saveShortcutFromModal(){const k=document.getElementById("shortcutKeyInput").value.trim(),v=document.getElementById("shortcutValueInput").value.trim();if(!k||!v)return alert("Enter shortcut code and item name.");shortcuts[k]=v;localStorage.setItem("muskanShortcuts",JSON.stringify(shortcuts));renderShortcuts();updateAllItemLabels();document.getElementById("shortcutKeyInput").value="";document.getElementById("shortcutValueInput").value="";closeModal("shortcutModal");if(cloudReady){try{await cloudPost("saveshortcut",{id:k,key:k,value:v});cloudStatus("Shortcut saved to Google Sheets ✓",true)}catch(e){cloudStatus("Shortcut saved locally; cloud sync failed");console.error(e)}}}
+async function saveShortcutFromModal(){
+ const k=document.getElementById("shortcutKeyInput").value.trim(),v=document.getElementById("shortcutValueInput").value.trim();
+ if(!k||!v)return alert("Enter shortcut code and item name.");
+ if(!cloudReady)return alert("Google Sheets is not connected. Shortcut was not saved.");
+ try{
+  await cloudPost("saveshortcut",{id:k,key:k,value:v});shortcuts[k]=v;renderShortcuts();updateAllItemLabels();
+  document.getElementById("shortcutKeyInput").value="";document.getElementById("shortcutValueInput").value="";closeModal("shortcutModal");cloudStatus("Shortcut saved to Google Sheets ✓",true);
+ }catch(e){console.error(e);cloudStatus("Shortcut save failed");alert("Shortcut could not be saved to Google Sheets. Please retry.");}
+}
 function renderMarquee(){const el=document.getElementById("shortcutMarquee");const pairs=Object.entries(shortcuts);el.innerHTML="";if(!pairs.length){el.innerHTML='<span style="padding:8px 20px;color:#8a6a52">No shortcuts saved yet — create one from the sidebar.</span>';return;}pairs.concat(pairs).forEach(([k,v])=>{const b=document.createElement("button");b.className="shortcut-chip";b.innerHTML=`<b>${escapeHtml(k)}</b> ${escapeHtml(v)}`;b.onclick=()=>insertShortcut(k);el.appendChild(b)})}
 function insertShortcut(k){const active=document.activeElement;let target=active&&active.classList&&active.classList.contains("eitem")?active:document.querySelector(".entry:last-child .eitem");if(!target){addEntry();target=document.querySelector(".entry:last-child .eitem")}target.value=shortcuts[k]||k;target.dispatchEvent(new Event("input",{bubbles:true}));target.focus()}
 function addShortcutRow(k="",v=""){
@@ -342,8 +406,13 @@ function renderShortcuts(){renderMarquee();}
 async function saveShortcuts(){
  const map={};
  document.querySelectorAll(".shortcut").forEach(r=>{const k=r.querySelector(".sk").value.trim(),v=r.querySelector(".sv").value.trim();if(k&&v)map[k]=v});
- const oldKeys=Object.keys(shortcuts);shortcuts=map;localStorage.setItem("muskanShortcuts",JSON.stringify(map));updateAllItemLabels();renderMarquee();
- if(cloudReady){try{for(const key of oldKeys)if(!map[key])await cloudDelete("deleteshortcut",key);for(const [key,value] of Object.entries(map))await cloudPost("saveshortcut",{id:key,key,value});cloudStatus("Shortcuts synced to Google Sheets ✓",true)}catch(e){cloudStatus("Shortcuts saved locally; cloud sync failed");console.error(e)}}alert("Shortcuts saved.");
+ if(!cloudReady)return alert("Google Sheets is not connected. Shortcuts were not saved.");
+ const oldKeys=Object.keys(shortcuts);
+ try{
+  for(const key of oldKeys)if(!map[key])await cloudDelete("deleteshortcut",key);
+  for(const [key,value] of Object.entries(map))await cloudPost("saveshortcut",{id:key,key,value});
+  shortcuts=map;updateAllItemLabels();renderMarquee();cloudStatus("Shortcuts saved to Google Sheets ✓",true);alert("Shortcuts saved.");
+ }catch(e){console.error(e);cloudStatus("Shortcut update failed");alert("Shortcut update failed in Google Sheets. Please retry.");}
 }
 function addEntry(data={}){
  const d=document.createElement("div");d.className="entry";
@@ -396,12 +465,16 @@ function currentBillObject(){
  return {id:editingBillId||("bill_"+Date.now()),billNo:document.getElementById("mainBill").value.trim(),vendor:document.getElementById("ms").value.trim(),items:data,grandTotal:grand,updatedAt:new Date().toISOString()};
 }
 async function saveCurrentBill(){
- if(cloudBusy)return;const bill=currentBillObject();if(!bill)return alert("Please add at least one bill item.");
- cloudBusy=true;cloudStatus("Saving bill…");
- const idx=savedBills.findIndex(x=>x.id===bill.id);if(idx>=0)savedBills[idx]=bill;else savedBills.unshift(bill);
- localStorage.setItem("muskanSavedBills",JSON.stringify(savedBills));editingBillId=bill.id;renderPreviousBills();
- try{if(cloudReady){await cloudPost("savebill",bill);cloudStatus("Bill saved to Google Sheets ✓",true);alert("Bill saved successfully.")}else{cloudStatus("Bill saved locally; cloud unavailable");alert("Bill saved on this device. Google Sheets connection is unavailable.")}}
- catch(e){console.error(e);cloudStatus("Bill saved locally; cloud sync failed");alert("Bill saved on this device, but Google Sheets sync failed. Please check connection and retry.")}
+ if(cloudBusy)return;
+ if(!cloudReady)return alert("Google Sheets is not connected. Bill was not saved.");
+ const bill=currentBillObject();if(!bill)return alert("Please add at least one bill item.");
+ cloudBusy=true;cloudStatus("Saving bill to Google Sheets…");
+ try{
+  await cloudPost("savebill",bill);
+  const idx=savedBills.findIndex(x=>String(x.id)===String(bill.id));
+  if(idx>=0)savedBills[idx]=bill;else savedBills.unshift(bill);
+  editingBillId=bill.id;renderPreviousBills();cloudStatus("Bill saved to Google Sheets ✓",true);alert("Bill saved successfully.");
+ }catch(e){console.error(e);cloudStatus("Bill save failed");alert("Bill was not saved to Google Sheets. Please retry.\n\n"+e.message);}
  finally{cloudBusy=false;}
 }
 function renderPreviousBills(){
@@ -417,10 +490,16 @@ function loadBillData(b){
 function editSavedBill(id){const b=savedBills.find(x=>x.id===id);if(!b)return;loadBillData(b);showSection("bill");}
 function printSavedBill(id){const b=savedBills.find(x=>x.id===id);if(!b)return;loadBillData(b);showSection("bill");updatePreview();window.print();}
 async function deleteSavedBill(id){
- const b=savedBills.find(x=>x.id===id);if(!b)return;
+ const b=savedBills.find(x=>String(x.id)===String(id));if(!b)return;
  if(!confirm(`Delete bill ${b.billNo||""} for ${b.vendor||"this vendor"}? This cannot be undone.`))return;
- savedBills=savedBills.filter(x=>x.id!==id);localStorage.setItem("muskanSavedBills",JSON.stringify(savedBills));renderPreviousBills();
- if(cloudReady){try{await cloudDelete("deletebill",id);cloudStatus("Cloud delete request sent — verify in Sheet",true)}catch(e){console.error(e);cloudStatus("Delete sync failed — refresh may restore bill");alert("Bill removed from this device. Cloud delete request was sent; please verify the Bills sheet.")}}
+ if(!cloudReady)return alert("Google Sheets is not connected. Bill was not deleted.");
+ cloudStatus("Deleting bill from Google Sheets…");
+ try{
+  const result=await cloudDelete("deletebill",id);
+  if(!result.deleted)throw new Error(result.message||"Cloud delete was not confirmed");
+  savedBills=savedBills.filter(x=>String(x.id)!==String(id));renderPreviousBills();
+  cloudStatus("Bill deleted from Google Sheets ✓",true);
+ }catch(e){console.error(e);cloudStatus("Cloud delete failed");alert("Bill was not deleted from Google Sheets. It remains in Previous Bills.\n\n"+e.message);}
 }
 
 function clearAllEntries(){if(!confirm("Clear all current bill entries?"))return;entries.innerHTML="";lastEntryDate="";addEntry();updatePreview()}
